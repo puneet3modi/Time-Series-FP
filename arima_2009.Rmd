@@ -1,0 +1,240 @@
+---
+title: "arimamax_tsfinal"
+author: "ANambiar"
+date: "2023-12-01"
+output: html_document
+---
+```{r setup, include=FALSE}
+library(readr)
+library(tseries)
+library(fpp)
+library(ggplot2)
+library(forecast)
+library(janitor)
+library(dplyr)
+library(lubridate)
+library(TSA)
+library(MuMIn)
+```
+
+### edited data loading and manipulating
+
+```{r Loading the dataset}
+data <- read_csv("/Users/pandita/Documents/merged.csv", show_col_types = FALSE)
+data <- data %>%
+  mutate(across(where(is.numeric), ~ifelse(. == "Not Available", 0, .)))
+data$Date <- as.Date(data$Date, format = "%Y-%m-%d")  # Adjust format as per your date format
+df <- clean_names(data)
+
+df_pre_2009 <- df %>% filter(date < as.Date("2009-03-01"))
+df_post_2009 <- df %>% filter(date >= as.Date("2009-03-01"))
+```
+
+```{r}
+# Function to create time series objects
+create_time_series_objects <- function(df, start_year) {
+  ts_list <- list()
+  for (col_name in colnames(df)) {
+    if (col_name != "date") {  
+      col_data <- df[[col_name]]
+      ts_obj <- ts(col_data, start = c(start_year, 1), frequency = 12)
+      ts_name <- paste0("ts_", col_name)
+      ts_list[[ts_name]] <- ts_obj
+    }
+  }
+  return(ts_list)
+}
+
+# Create time series objects for pre-2005 and post-2005 datasets
+ts_pre_2009 <- create_time_series_objects(df_pre_2009, c(1973, 1, 1))
+ts_post_2009 <- create_time_series_objects(df_post_2009, c(2009, 3, 1)) 
+
+pre_2009_train <- ts_pre_2009$ts_total_energy_co2_emissions
+post_2009_train <- ts_post_2009$ts_total_energy_co2_emissions
+```
+
+### stationary check 
+
+```{r Checking for stationarity}
+# Check for stationarity
+adf.test(pre_2009_train, alternative="stationary")
+# Since the data is non-stationary, apply differencing to detrend the data (why in other notebook) 
+seasonal_diff <- diff(pre_2009_train, lag=12, differences=1)
+```
+
+###  arimax
+
+### figure out p,q for non-seasonal components from EACF plot
+
+```{r}
+eacf(seasonal_diff)
+```
+
+Non-Seasonal Differencing (d) = 0
+Seasonal Differencing (D) = 1
+ARIMA(p, 0, q)(P, 1, Q)
+
+Lowest p + q combos:
+ARIMA(1, 0, 3), ARIMA(3, 0, 0), ARIMA(2, 0, 2) 
+
+use values around (2,1) for seasonal components
+
+```{r}
+non_seasonal_orders <- list(c(1, 3), c(3, 0), c(2, 2))
+seasonal_order_range <- list(P = c(1, 2, 3), Q = c(0, 1, 2))
+```
+
+### arimax function
+
+```{r}
+fit_arimax_models <- function(data, xreg, non_seasonal_orders, seasonal_order_range) {
+  results <- list()
+  best_model <- NULL
+  lowest_aicc <- Inf
+  
+  # Fit ARIMAX models with specified orders
+  for(order in non_seasonal_orders) {
+    for(P in (seasonal_order_range$P[1]):(seasonal_order_range$P[3])) {
+      for(Q in (seasonal_order_range$Q[1]):(seasonal_order_range$Q[3])) {
+        current_order <- c(order[1], 0, order[2])
+        current_seasonal_order <- c(P, 1, Q)
+        
+        model_attempt <- try(Arima(data, order = current_order, seasonal = current_seasonal_order, xreg = xreg), silent = FALSE)
+        
+        if (inherits(model_attempt, "try-error")) {
+          print(paste("Error in fitting model:", current_order, current_seasonal_order))
+          print(model_attempt)
+        } else {
+          model <- model_attempt
+          model_name <- paste("ARIMA", paste(current_order, collapse = ","), " x ", paste(current_seasonal_order, collapse = ","), sep = "")
+          aicc_value <- AICc(model)
+          results[[model_name]] <- list(Model = model, AICc = aicc_value)
+          cat(model_name, ": AICc =", aicc_value, "\n")
+          
+          if (aicc_value < lowest_aicc) {
+            best_model <- model
+            lowest_aicc <- aicc_value
+          }
+        }
+      }
+    }
+  }
+
+  # Fit auto.arima model with regression
+  auto_model_attempt <- try(auto.arima(data, xreg = xreg, seasonal = TRUE), silent = FALSE)
+  
+  if (inherits(auto_model_attempt, "try-error")) {
+    print("Error in fitting auto.arima model")
+    print(auto_model_attempt)
+  } else {
+    auto_model <- auto_model_attempt
+    arima_order <- auto_model$order
+    seasonal_order <- auto_model$seasonal$order
+    frequency <- auto_model$seasonal$period
+    aicc_value <- AICc(auto_model)
+    results[["auto.arima"]] <- list(Model = auto_model, AICc = aicc_value)
+    cat("auto.arima: AICc =", aicc_value)
+    
+    if (aicc_value < lowest_aicc) {
+      best_model <- auto_model
+      lowest_aicc <- aicc_value
+    }
+  }
+    results[["best_model"]] <- best_model
+  return(results)
+}
+```
+
+### xreg for pre 2005
+
+```{r}
+# filtering columns
+#pre_2005_df_filtered <- df_pre_2005 %>% select(-contains("co2_emissions"), -date)
+pre_2009_df_filtered <- df_pre_2009 %>% 
+  select('gdp', 'total_renewable_energy_consumption', 'total_renewable_energy_production', 'total_fossil_fuels_production', 'total_fossil_fuels_consumption')
+
+# make numeric, deal with nulls
+xreg <- pre_2009_df_filtered
+xreg <- data.frame(lapply(xreg, function(x) as.numeric(as.character(x))))
+#colSums(is.na(xreg))
+#xreg <- xreg[, colSums(is.na(xreg)) == 0]
+if (!is.matrix(xreg)) {
+  xreg <- as.matrix(xreg)
+}
+```
+
+```{r}
+auto.arima(pre_2009_train, xreg = xreg, seasonal = TRUE)
+```
+
+### models for pre 2009
+
+```{r}
+fitted_models <- fit_arimax_models(pre_2009_train, xreg, non_seasonal_orders, seasonal_order_range)
+```
+
+### xreg for post 2005
+
+```{r}
+# filtering columns
+post_2009_df_filtered <- df_post_2009 %>% 
+  select('gdp', 'total_renewable_energy_consumption', 'total_renewable_energy_production', 'total_fossil_fuels_production', 'total_fossil_fuels_consumption')
+
+# make numeric, deal with nulls
+xreg_post <- post_2009_df_filtered
+if (!is.matrix(xreg_post)) {
+  xreg_post <- as.matrix(xreg_post)
+}
+```
+
+### models for post 2009
+
+```{r}
+fitted_models_post <- fit_arimax_models(post_2009_train, xreg_post, non_seasonal_orders, seasonal_order_range)
+```
+
+### pre 2005: checkresiduals for best model, ljung box for residuals of best model - make sure white noise
+
+```{r}
+best_model_pre2009 <- fitted_models[["best_model"]]
+checkresiduals(best_model_pre2009)
+ljung_box_test <- Box.test(best_model_pre2009$residuals, lag = 20, type = "Ljung-Box")
+print(ljung_box_test)
+```
+
+### post 2005: checkresiduals for best model, ljung box for residuals of best model - make sure white noise
+
+```{r}
+best_model_post2009 <- fitted_models_post[["best_model"]]
+checkresiduals(best_model_post2009)
+ljung_box_test <- Box.test(best_model_post2009$residuals, lag = 20, type = "Ljung-Box")
+print(ljung_box_test)
+```
+```{r}
+# forecast best model after 2009 Feb policy implementation
+forecast_best_model_2009 <- forecast(best_model_pre2009, xreg = xreg_post)
+```
+
+```{r}
+# plot forecasted value with the actual values
+# Plot the forecast
+plot(forecast_best_model_2009, main = "Forecast vs Actual", xlab = "Time", ylab = "Values")
+
+# Add the actual values
+lines(post_2009_train, col = "red")
+
+# Add a legend
+legend("topleft", legend = c("Forecast", "Actual"), col = c("blue", "red"), lty = 1)
+
+```
+
+```{r}
+# comparing best models pre policy
+best_model_pre2009
+```
+
+
+```{r}
+# comparing best models pre policy
+best_model_post2009
+```
