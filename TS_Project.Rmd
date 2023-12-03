@@ -1,0 +1,176 @@
+---
+title: "TS_Project_Puneet"
+author: "Puneet Modi"
+date: "2023-11-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+library(readr)
+library(tseries)
+library(fpp)
+library(ggplot2)
+library(forecast)
+library(janitor)
+library(dplyr)
+library(lubridate)
+library(TSA)
+library(MuMIn)
+```
+
+
+```{r Loading the dataset}
+data <- read_csv("merged.csv")
+
+# Imputing missing values
+data <- data %>%
+  mutate(across(where(is.numeric), ~ifelse(. == "Not Available", 0, .)))
+
+# Converting date to a datetime object
+data$Date <- as.Date(data$Date)
+
+# Cleaning up the column names
+df <- clean_names(data)
+
+head(df)
+
+# Creating time series objects for all columns
+create_time_series_objects <- function(df) {
+  # Initialize an empty list to store the time series objects
+  ts_list <- list()
+  
+  # Iterate through the columns of the data frame
+  for (col_name in colnames(df)) {
+    # Extract the column data
+    col_data <- df[[col_name]]
+    
+    # Create a time series object with the specified start and frequency
+    ts_obj <- ts(col_data, start = c(1973, 1), frequency=12)
+    
+    # Name the time series object
+    ts_name <- paste0("ts_", col_name)
+    
+    # Assign the time series object to the list with the specified name
+    ts_list[[ts_name]] <- ts_obj
+  }
+  
+  # Return the list of time series objects
+  return(ts_list)
+}
+
+# Creating a list that contains ts objects for every column 
+ts <- create_time_series_objects(df)
+```
+
+
+```{r Train and Validation Sets}
+# Train and Validation sets are pre-2005. Forecasting post-2005 to show the 
+# effect of the policy on CO2 Emissions
+train_data_2005 <- window(ts$ts_total_energy_co2_emissions, start=1973, end=2005)
+train_data_2009 <- window(ts$ts_total_energy_co2_emissions, start=1973, end=2009)
+# validation_data <- window(ts$ts_total_energy_co2_emissions, start=1973, end=2005)
+
+# Plotting the dependent variable -> total CO2 emissions
+plot(ts$ts_total_energy_co2_emissions, main="Total CO2 Emissions")
+acf(ts$ts_total_energy_co2_emissions)
+pacf(ts$ts_total_energy_co2_emissions)
+
+# Applying Box-Cox transformation to stabilize the variance 
+lambda <- BoxCox.lambda(ts$ts_total_energy_co2_emissions)
+lambda # 1.41
+
+# Separating the seasonal component
+decomposed_data <- stl(ts$ts_total_energy_co2_emissions, s.window="periodic")
+plot(decomposed_data)
+```
+
+We observe two trends - an increasing trend till 2005 and a decreasing trend post 
+2005. Hence, total CO2 emissions is not stationary. 
+
+We observed that as time increases, the amplitude seems to increase and decrease. 
+This change in the height of the peaks/troughs does not seem to be constant over
+time. The data shows multiplicative seasonality.
+
+
+```{r Checking for stationarity}
+# Check for stationarity
+adf.test(train_data_2005, alternative="stationary")
+
+# Since the data is non-stationary, apply differencing to detrend the data and 
+# make it stationary. Second order leads to over differencing. 
+seasonal_diff <- diff(train_data_2005, lag=12, differences=1)
+seasonal_diff_2 <- diff(train_data_2005, lag=12, differences=2)
+plot(seasonal_diff)
+
+# ACF for seasonal differencing
+acf(seasonal_diff, main="ACF of Seasonally Differenced Series")
+
+# PACF for seasonal differencing 
+pacf(seasonal_diff, main="PACF of Seasonally Differenced Series")
+
+# KPSS test on original data
+kpss_test_original <- kpss.test(train_data_2005)
+print(paste("KPSS Test for Original Data: ", kpss_test_original$p.value))
+
+# KPSS test on 1st order difference
+kpss_test_diff1 <- kpss.test(seasonal_diff)
+print(paste("KPSS Test for 1st Order Difference: ", kpss_test_diff1$p.value))
+```
+
+According to the ADF test, the data is not stationary. The p-value is greater 
+than 0.05 so we accept the null hypothesis. We then find an appropriate 
+differencing which yields seasonal and trend stationary data. 
+
+Plot the ACF and PACF to determine if the detrended and deseasonalized time 
+series is stationary.
+
+```{r Creating labels for intervention analysis}
+# Finding the best model pre-2005
+model_2005 <- auto.arima(seasonal_diff, seasonal=TRUE, 
+                         stationary=TRUE, lambda=lambda) #############
+model_2005
+checkresiduals((model_2005))
+
+eacf(seasonal_diff)
+
+# Based on eacf, fitting different ARIMA models and comparing the AICc and 
+# BIC values
+fit1_2005 <- Arima(train_data_2005, order=c(1, 0, 0), seasonal=c(2, 1, 1))
+summary(fit1_2005)
+fit2_2005 <- Arima(train_data_2005, order=c(1, 0, 1), seasonal=c(2, 1, 1))
+summary(fit2_2005)
+fit3_2005 <- Arima(train_data_2005, order=c(2, 0, 1), seasonal=c(2, 1, 1))
+summary(fit3_2005)
+fit4_2005 <- Arima(train_data_2005, order=c(2, 0, 2), seasonal=c(2, 1, 1))
+summary(fit4_2005)
+
+# Finding the best model pre-2009
+model_2009 <- auto.arima(train_data_2009, seasonal=TRUE, 
+                         stationary=FALSE, lambda=lambda) #############
+model_2009
+checkresiduals((model_2009))
+
+eacf(train_data_2009[1:432])
+
+# Based on eacf, fitting different ARIMA models and comparing the AICc and 
+# BIC values
+fit1_2009 <- Arima(train_data_2009, order=c(1, 0, 0), seasonal=c(2, 1, 1))
+summary(fit1_2009)
+fit2_2009 <- Arima(train_data_2009, order=c(1, 0, 1), seasonal=c(2, 1, 1))
+summary(fit2_2009)
+fit3_2009 <- Arima(train_data_2009, order=c(2, 0, 1), seasonal=c(2, 1, 1))
+summary(fit3_2009)
+# fit4_2009 <- Arima(train_data_2009, order=c(2, 0, 2), seasonal=c(2, 1, 1))
+# summary(fit4_2009)
+
+# # Exponential smoothing model using ets()
+# model_ets <- ets(ts$ts_total_energy_co2_emissions, damped="Multiplicative", 
+#                  allow.multiplicative.trend=TRUE, lambda="auto")
+# summary(model_ets)
+
+# df$Intervention <- ifelse(year(data$Date) >= 2005, 1, 0)
+# 
+# model <- arimax(ts$ts_total_energy_co2_emissions, order=c(1,0,2), xreg=df$Intervention)
+# model
+```
