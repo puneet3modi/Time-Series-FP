@@ -32,12 +32,12 @@ df_post_2009 <- df %>% filter(date >= as.Date("2009-03-01"))
 
 ```{r}
 # Function to create time series objects
-create_time_series_objects <- function(df, start_year) {
+create_time_series_objects <- function(df, start_date) {
   ts_list <- list()
   for (col_name in colnames(df)) {
     if (col_name != "date") {  
       col_data <- df[[col_name]]
-      ts_obj <- ts(col_data, start = c(start_year, 1), frequency = 12)
+      ts_obj <- ts(col_data, start = start_date, frequency = 12)
       ts_name <- paste0("ts_", col_name)
       ts_list[[ts_name]] <- ts_obj
     }
@@ -70,12 +70,12 @@ seasonal_diff <- diff(pre_2009_train, lag=12, differences=1)
 eacf(seasonal_diff)
 ```
 
-Non-Seasonal Differencing (d) = 0
+Non-Seasonal Differencing (d) = 1
 Seasonal Differencing (D) = 1
 ARIMA(p, 0, q)(P, 1, Q)
 
 Lowest p + q combos:
-ARIMA(1, 0, 3), ARIMA(3, 0, 0), ARIMA(2, 0, 2) 
+ARIMA(1, 1, 3), ARIMA(3, 1, 0), ARIMA(2, 1, 2) 
 
 use values around (2,1) for seasonal components
 
@@ -96,7 +96,7 @@ fit_arimax_models <- function(data, xreg, non_seasonal_orders, seasonal_order_ra
   for(order in non_seasonal_orders) {
     for(P in (seasonal_order_range$P[1]):(seasonal_order_range$P[3])) {
       for(Q in (seasonal_order_range$Q[1]):(seasonal_order_range$Q[3])) {
-        current_order <- c(order[1], 0, order[2])
+        current_order <- c(order[1], 1, order[2])
         current_seasonal_order <- c(P, 1, Q)
         
         model_attempt <- try(Arima(data, order = current_order, seasonal = current_seasonal_order, xreg = xreg), silent = FALSE)
@@ -173,6 +173,10 @@ auto.arima(pre_2009_train, xreg = xreg, seasonal = TRUE)
 fitted_models <- fit_arimax_models(pre_2009_train, xreg, non_seasonal_orders, seasonal_order_range)
 ```
 
+
+ARIMA1,1,3 x 2,1,2 : AICc = 1588.949 
+
+
 ### xreg for post 2005
 
 ```{r}
@@ -192,6 +196,10 @@ if (!is.matrix(xreg_post)) {
 ```{r}
 fitted_models_post <- fit_arimax_models(post_2009_train, xreg_post, non_seasonal_orders, seasonal_order_range)
 ```
+
+
+Best model: ARIMA2,1,2 x 1,1,1 : AICc = 680.184 
+
 
 ### pre 2005: checkresiduals for best model, ljung box for residuals of best model - make sure white noise
 
@@ -218,7 +226,7 @@ forecast_best_model_2009 <- forecast(best_model_pre2009, xreg = xreg_post)
 ```{r}
 # plot forecasted value with the actual values
 # Plot the forecast
-plot(forecast_best_model_2009, main = "Forecast vs Actual", xlab = "Time", ylab = "Values")
+plot(forecast_best_model_2009, main = "Forecast vs Actual", xlab = "Time", ylab = "Values", ylim = c(300, 550))
 
 # Add the actual values
 lines(post_2009_train, col = "red")
@@ -238,3 +246,4 @@ best_model_pre2009
 # comparing best models pre policy
 best_model_post2009
 ```
+
