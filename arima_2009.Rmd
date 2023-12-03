@@ -218,6 +218,8 @@ checkresiduals(best_model_post2009)
 ljung_box_test <- Box.test(best_model_post2009$residuals, lag = 20, type = "Ljung-Box")
 print(ljung_box_test)
 ```
+
+
 ```{r}
 # forecast best model after 2009 Feb policy implementation
 forecast_best_model_2009 <- forecast(best_model_pre2009, xreg = xreg_post)

@@ -1,0 +1,88 @@
+---
+title: "Intervention Analysis"
+author: "Puneet Modi"
+date: "2023-12-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(readr)
+library(tseries)
+library(fpp)
+library(ggplot2)
+library(forecast)
+library(janitor)
+library(dplyr)
+library(lubridate)
+library(TSA)
+library(MuMIn)
+```
+
+```{r Loading the dataset}
+data <- read_csv("merged.csv", show_col_types = FALSE)
+data <- data %>%
+  mutate(across(where(is.numeric), ~ifelse(. == "Not Available", 0, .)))
+data$Date <- as.Date(data$Date, format = "%Y-%m-%d")  # Adjust format as per your date format
+df <- clean_names(data)
+
+df_pre_2017 <- df %>% filter(date < as.Date("2017-01-01"))
+df_post_2017 <- df %>% filter(date >= as.Date("2017-01-01"))
+```
+
+
+```{r}
+# Function to create time series objects
+create_time_series_objects <- function(df, start_date) {
+  ts_list <- list()
+  for (col_name in colnames(df)) {
+    if (col_name != "date") {  
+      col_data <- df[[col_name]]
+      ts_obj <- ts(col_data, start = start_date, frequency = 12)
+      ts_name <- paste0("ts_", col_name)
+      ts_list[[ts_name]] <- ts_obj
+    }
+  }
+  return(ts_list)
+}
+
+# Create time series objects for pre-2005 and post-2005 datasets
+ts_pre_2017 <- create_time_series_objects(df_pre_2017, c(1973, 1, 1))
+ts_post_2017 <- create_time_series_objects(df_post_2017, c(2017, 1, 1)) 
+
+pre_2017_train <- ts_pre_2017$ts_total_energy_co2_emissions
+post_2017_train <- ts_post_2017$ts_total_energy_co2_emissions
+```
+
+
+
+ARIMA1,1,3 x 2,1,2 : AICc = 1588.949 
+
+
+```{r}
+df_pre_2017$Intervention <- ifelse(year(df_pre_2017$date) >= 2009, 1, 0)
+
+model <- arimax(ts_pre_2017$ts_total_energy_co2_emissions, order=c(1,1,3), 
+                seasonal=list(order=c(2,1,2), period=12), xreg=df_pre_2017$Intervention)
+model
+```
+
+
+```{r}
+# filtering columns
+#pre_2005_df_filtered <- df_pre_2005 %>% select(-contains("co2_emissions"), -date)
+pre_2017_df_filtered <- df_pre_2017 %>% 
+  select('gdp', 'total_renewable_energy_consumption', 'total_renewable_energy_production', 'total_fossil_fuels_production', 'total_fossil_fuels_consumption', 'Intervention')
+
+# make numeric, deal with nulls
+xreg <- pre_2017_df_filtered
+xreg <- data.frame(lapply(xreg, function(x) as.numeric(as.character(x))))
+#colSums(is.na(xreg))
+#xreg <- xreg[, colSums(is.na(xreg)) == 0]
+if (!is.matrix(xreg)) {
+  xreg <- as.matrix(xreg)
+}
+
+
+forecast_best_model_2017 <- forecast(model, xreg=df_pre_2017$Intervention)
+```
+
