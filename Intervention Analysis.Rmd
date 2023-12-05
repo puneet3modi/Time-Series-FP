@@ -16,6 +16,7 @@ library(dplyr)
 library(lubridate)
 library(TSA)
 library(MuMIn)
+library(lmtest)
 ```
 
 ```{r Loading the dataset}
@@ -24,6 +25,48 @@ data <- data %>%
   mutate(across(where(is.numeric), ~ifelse(. == "Not Available", 0, .)))
 data$Date <- as.Date(data$Date, format = "%Y-%m-%d")  # Adjust format as per your date format
 df <- clean_names(data)
+
+#step function intervention
+df$Intervention_step <- ifelse(year(df$date) >= 2009, 1, 0)
+
+
+# 1. Ramp-Up Function:
+# In many cases, the effect of a policy change doesn't happen instantly but ramps up gradually. You can model this by using a ramp-up function. For example:
+# Ramp-Up Function Intervention
+df$Intervention_ramp <- pmax(0, (year(df$date) - 2009) / 2)  # Adjust the scaling factor as needed
+
+# This function starts from 0 in 2009 and gradually increases over time.
+
+
+# 2. Exponential Decay Function:
+# Assuming that the impact of the policy diminishes over time, you can use an exponential decay function:
+# Exponential Decay Function Intervention
+decay_factor <- 0.95  # Adjust the decay factor as needed
+df$Intervention_decay <- ifelse(year(df$date) >= 2009, decay_factor^(year(df$date) - 2009), 0)
+# This function starts from 1 in 2009 and exponentially decreases over time.
+
+
+# 3. Sigmoidal Function:
+# A sigmoidal function can be used to model a gradual increase, saturation, and then decrease in the impact of the policy:
+# Sigmoidal Function Intervention
+k <- 0.1  # Adjust the steepness of the sigmoidal curve
+df$Intervention_sig <- ifelse(year(df$date) >= 2009, 1 / (1 + exp(-k * (year(df$date) - 2009))), 0)
+# This function starts from 0, increases gradually, saturates, and then decreases.
+
+
+# # 4. Piecewise Function:
+# # If you have information suggesting that the impact changed in distinct phases, you can use a piecewise function:
+# # Piecewise Function Intervention
+# df$Intervention <- ifelse(year(df$date) >= 2009, 1 + 0.5 * (year(df$date) - 2009), 0)
+# # This function assumes a linear increase after 2009.
+
+# 5. Delayed Sigmoid Function Intervention
+k <- 0.1  # Adjust the steepness of the sigmoidal curve
+delay <- 2  # Adjust the delay period
+df$Intervention_del_sig <- ifelse(year(df$date) >= 2009 + delay, 1 / (1 + exp(-k * (year(df$date) - 2009 - delay))), 0)
+# In this example, the sigmoid function starts to increase after a delay of 3 years (you can adjust the delay parameter as needed). The steepness of the sigmoidal curve is controlled by the k parameter.
+
+
 
 df_pre_2017 <- df %>% filter(date < as.Date("2017-01-01"))
 df_post_2017 <- df %>% filter(date >= as.Date("2017-01-01"))
@@ -54,35 +97,438 @@ post_2017_train <- ts_post_2017$ts_total_energy_co2_emissions
 ```
 
 
-
-ARIMA1,1,3 x 2,1,2 : AICc = 1588.949 
-
-
+Required functions 
 ```{r}
-df_pre_2017$Intervention <- ifelse(year(df_pre_2017$date) >= 2009, 1, 0)
+fit_arimax_models <- function(data, xreg, non_seasonal_orders, seasonal_order_range) {
+  results <- list()
+  best_model <- NULL
+  lowest_aicc <- Inf
+  
+  if(!is.matrix(xreg)) {
+    xreg <- as.matrix(xreg) 
+  }
+  
+  # Fit ARIMAX models with specified orders
+  for(order in non_seasonal_orders) {
+    for(P in (seasonal_order_range$P[1]):(seasonal_order_range$P[3])) {
+      for(Q in (seasonal_order_range$Q[1]):(seasonal_order_range$Q[3])) {
+        current_order <- c(order[1], 1, order[2])
+        current_seasonal_order <- c(P, 1, Q)
+        
+        model_attempt <- try(Arima(data, order = current_order, seasonal = current_seasonal_order, xreg = xreg), silent = FALSE)
+        
+        if (inherits(model_attempt, "try-error")) {
+          print(paste("Error in fitting model:", current_order, current_seasonal_order))
+          print(model_attempt)
+        } else {
+          model <- model_attempt
+          model_name <- paste("ARIMA", paste(current_order, collapse = ","), " x ", paste(current_seasonal_order, collapse = ","), sep = "")
+          aicc_value <- AICc(model)
+          results[[model_name]] <- list(Model = model, AICc = aicc_value)
+          cat(model_name, ": AICc =", aicc_value, "\n")
+          
+          if (aicc_value < lowest_aicc) {
+            best_model <- model
+            lowest_aicc <- aicc_value
+          }
+        }
+      }
+    }
+  }
 
-model <- arimax(ts_pre_2017$ts_total_energy_co2_emissions, order=c(1,1,3), 
-                seasonal=list(order=c(2,1,2), period=12), xreg=df_pre_2017$Intervention)
-model
-```
-
-
-```{r}
-# filtering columns
-#pre_2005_df_filtered <- df_pre_2005 %>% select(-contains("co2_emissions"), -date)
-pre_2017_df_filtered <- df_pre_2017 %>% 
-  select('gdp', 'total_renewable_energy_consumption', 'total_renewable_energy_production', 'total_fossil_fuels_production', 'total_fossil_fuels_consumption', 'Intervention')
-
-# make numeric, deal with nulls
-xreg <- pre_2017_df_filtered
-xreg <- data.frame(lapply(xreg, function(x) as.numeric(as.character(x))))
-#colSums(is.na(xreg))
-#xreg <- xreg[, colSums(is.na(xreg)) == 0]
-if (!is.matrix(xreg)) {
-  xreg <- as.matrix(xreg)
+  # Fit auto.arima model with regression
+  auto_model_attempt <- try(auto.arima(data, xreg = xreg, seasonal = TRUE), silent = FALSE)
+  
+  if (inherits(auto_model_attempt, "try-error")) {
+    print("Error in fitting auto.arima model")
+    print(auto_model_attempt)
+  } else {
+    auto_model <- auto_model_attempt
+    arima_order <- auto_model$order
+    seasonal_order <- auto_model$seasonal$order
+    frequency <- auto_model$seasonal$period
+    aicc_value <- AICc(auto_model)
+    results[["auto.arima"]] <- list(Model = auto_model, AICc = aicc_value)
+    cat("auto.arima: AICc =", aicc_value)
+    
+    if (aicc_value < lowest_aicc) {
+      best_model <- auto_model
+      lowest_aicc <- aicc_value
+    }
+  }
+    results[["best_model"]] <- best_model
+  return(results)
 }
 
 
-forecast_best_model_2017 <- forecast(model, xreg=df_pre_2017$Intervention)
+#Function 2 
+intervention_vars <- c("Intervention_step", "Intervention_ramp", "Intervention_decay", "Intervention_sig", "Intervention_del_sig")
+
+fit_models_for_interventions <- function(data, df, intervention_vars, non_seasonal_orders, seasonal_order_range) {
+
+  results <- list()
+  
+  best_aic <- Inf
+  best_model <- NULL
+  
+  for (intervention in intervention_vars) {
+
+    # Create xreg dataset with current intervention variable
+    xreg <- df %>% 
+      select(one_of(c("gdp", "total_renewable_energy_consumption", "total_renewable_energy_production", 
+                     "total_fossil_fuels_production", "total_fossil_fuels_consumption", intervention)))
+    
+    # Fit ARIMAX models
+    fitted_models <- fit_arimax_models(data, xreg, non_seasonal_orders, seasonal_order_range)
+    
+    # Extract best model 
+    best_model_intervention <- fitted_models$best_model
+    best_aic_intervention <- best_model_intervention$aicc
+    
+
+    # Track overall best 
+    if(best_aic_intervention < best_aic){
+      best_model <- best_model_intervention 
+      best_aic <- best_aic_intervention
+    }
+    
+    # Store results
+    results[[intervention]] <- list(
+      fitted_models = fitted_models,
+      best_model = best_model_intervention
+    )
+  
+  }
+  
+  # Return overall best model  
+  results$best_model <- best_model
+  
+  return(results)
+  
+}
 ```
+
+```{r}
+# Check for stationarity
+adf.test(pre_2017_train, alternative="stationary")
+# Since the data is non-stationary, apply differencing to detrend the data (why in other notebook) 
+seasonal_diff <- diff(pre_2017_train, lag=12, differences=1)
+eacf(seasonal_diff)
+```
+
+```{r}
+non_seasonal_orders <- list(c(1, 3), c(3, 3), c(2, 3))
+seasonal_order_range <- list(P = c(1, 2, 3), Q = c(0, 1, 2))
+```
+
+
+xreg pre 2017 without intervention 
+```{r}
+# filtering columns
+pre_2017_df_filtered <- df_pre_2017 %>% 
+  select('gdp', 'total_renewable_energy_consumption', 'total_renewable_energy_production', 'total_fossil_fuels_production', 'total_fossil_fuels_consumption')
+
+# make numeric, deal with nulls
+xreg_pre_ni <- pre_2017_df_filtered
+if (!is.matrix(xreg_pre_ni)) {
+  xreg_pre_ni <- as.matrix(xreg_pre_ni)
+}
+```
+
+xreg post 2017 without intervention 
+```{r}
+# filtering columns
+post_2017_df_filtered <- df_post_2017 %>% 
+  select('gdp', 'total_renewable_energy_consumption', 'total_renewable_energy_production', 'total_fossil_fuels_production', 'total_fossil_fuels_consumption')
+
+# make numeric, deal with nulls
+xreg_post_ni <- post_2017_df_filtered
+if (!is.matrix(xreg_post_ni)) {
+  xreg_post_ni <- as.matrix(xreg_post_ni)
+}
+```
+
+```{r}
+fitted_models <- fit_arimax_models(pre_2017_train, xreg_pre_ni, non_seasonal_orders, seasonal_order_range)
+```
+ARIMA(3,1,3)(1,1,1)[12] aicc : 1999.21 
+
+
+```{r}
+
+model_results <- fit_models_for_interventions(pre_2017_train, df_pre_2017, intervention_vars, 
+                                               non_seasonal_orders, seasonal_order_range)
+# model_results contains fitted models for each intervention variable 
+# Can compare AICc to choose best intervention variable
+```
+
+```{r}
+model_results$Intervention_step$best_model
+```
+
+```{r}
+model_results$Intervention_ramp$best_model
+```
+
+```{r}
+model_results$Intervention_decay$best_model
+```
+
+```{r}
+model_results$Intervention_sig$best_model
+```
+
+```{r}
+model_results$Intervention_del_sig$best_model
+```
+
+
+The best model is with sigmoid intervention function [12]. 
+
+
+### pre 2017: checkresiduals for best model, ljung box for residuals of best model - make sure white noise
+
+```{r}
+checkresiduals(model_results$Intervention_sig$best_model)
+ljung_box_test <- Box.test(model_results$Intervention_sig$best_model$residuals, lag = 20, type = "Ljung-Box")
+print(ljung_box_test)
+```
+
+```{r}
+coeftest(model_results$Intervention_sig$best_model)
+```
+<!-- fit models pre  -->
+<!-- ```{r} -->
+<!-- auto.arima(pre_2017_train, xreg = xreg_pre, seasonal = TRUE) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- fitted_models_pre <- fit_arimax_models(pre_2017_train, xreg_pre, non_seasonal_orders, seasonal_order_range) -->
+<!-- ``` -->
+
+<!-- ARIMA3,1,3 x 3,1,2 : AICc = 1996.857  -->
+
+xreg_post_2017
+```{r}
+# filtering columns
+post_2017_df_filtered <- df_post_2017 %>% 
+  select('gdp', 'total_renewable_energy_consumption', 'total_renewable_energy_production', 'total_fossil_fuels_production', 'total_fossil_fuels_consumption', 'Intervention_sig')
+
+# make numeric, deal with nulls
+xreg_post_2017 <- post_2017_df_filtered
+if (!is.matrix(xreg_post_2017)) {
+  xreg_post_2017 <- as.matrix(xreg_post_2017)
+}
+```
+
+forecast
+```{r}
+forecast_best_model_2017 <- forecast(model_results$Intervention_sig$best_model, xreg=xreg_post_2017)
+```
+
+```{r}
+# plot forecasted value with the actual values
+# Plot the forecast
+plot(forecast_best_model_2017, main = "Forecast vs Actual", xlab = "Time", ylab = "Values", ylim = c(300, 550))
+
+# Add the actual values
+lines(post_2017_train, col = "red")
+
+# Add a legend
+legend("topleft", legend = c("Forecast", "Actual"), col = c("blue", "red"), lty = 1)
+```
+
+
+
+```{r}
+forecast_best_model_2017_wi <- forecast(fitted_models$best_model, xreg=xreg_post_ni)
+```
+
+```{r}
+# plot forecasted value with the actual values
+# Plot the forecast
+plot(forecast_best_model_2017_wi, main = "Forecast vs Actual", xlab = "Time", ylab = "Values", ylim = c(300, 550))
+
+# Add the actual values
+lines(post_2017_train, col = "red")
+
+# Add a legend
+legend("topleft", legend = c("Forecast", "Actual"), col = c("blue", "red"), lty = 1)
+```
+
+
+RMSE 
+
+```{r}
+accuracy(forecast_best_model_2017)
+```
+
+```{r}
+accuracy(forecast_best_model_2017_wi)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+df_pre_2020 <- df %>% filter(date < as.Date("2020-01-01"))
+df_post_2020 <- df %>% filter(date >= as.Date("2020-01-01"))
+```
+
+
+```{r}
+# Create time series objects for pre-2005 and post-2005 datasets
+ts_pre_2020 <- create_time_series_objects(df_pre_2020, c(1973, 1, 1))
+ts_post_2020 <- create_time_series_objects(df_post_2020, c(2020, 1, 1)) 
+
+pre_2020_train <- ts_pre_2020$ts_total_energy_co2_emissions
+post_2020_train <- ts_post_2020$ts_total_energy_co2_emissions
+```
+
+```{r}
+# filtering columns
+pre_2020_df_filtered <- df_pre_2020 %>% 
+  select('gdp', 'total_renewable_energy_consumption', 'total_renewable_energy_production', 'total_fossil_fuels_production', 'total_fossil_fuels_consumption', 'Intervention_sig')
+
+# make numeric, deal with nulls
+xreg_pre_2020 <- pre_2020_df_filtered
+if (!is.matrix(xreg_pre_2020)) {
+  xreg_pre_2020 <- as.matrix(xreg_pre_2020)
+}
+```
+
+```{r}
+# Assuming df_pre_2020 has a time index, replace 'your_time_index_column' with the actual column name
+time_index <- df_pre_2020$date
+
+# Convert xreg_pre_2020 to a time series object
+xreg_pre_2020_ts <- ts(xreg_pre_2020, start = c(1973, 1, 1), frequency = 12)  # Adjust 
+```
+
+
+cross validation
+```{r}
+order <- c(3,1,3)
+seasonal_order <- c(3,1,2)
+
+k <- 500 # minimum data length for fitting a model
+n <- length(pre_2020_train) # Number of data points
+
+p <- 12 ### Period
+H <- 12 # Forecast Horizon
+
+defaultW <- getOption("warn") 
+options(warn = -1)
+
+st <- tsp(pre_2020_train)[1]+(k-2)/p #  gives the start time in time units,
+
+err_1 <- matrix(NA,n-k,H)
+err_2 <- matrix(NA,n-k,H)
+
+aicc_1 = numeric()
+aicc_2 = numeric()
+
+for(i in 1:(n-k))
+{
+ # Define the indices for slicing the data
+  expanding_window_end <- st + i/p
+  sliding_window_start <- st + (i-k+1)/p
+  sliding_window_end <- st + i/p
+  test_start <- st + (i+1)/p
+  test_end <- st + (i+H)/p
+
+  # Expanding Window
+  ce_train_1 <- window(df_pre_2020, end=expanding_window_end)
+  xreg_train_1 <- subset(xreg_pre_2020_ts, time(xreg_pre_2020_ts) <= expanding_window_end)
+
+  # Sliding Window
+  ce_train_2 <- window(df_pre_2020, start=sliding_window_start, end=sliding_window_end)
+  xreg_train_2 <- subset(xreg_pre_2020_ts, time(xreg_pre_2020_ts) >= sliding_window_start & time(xreg_pre_2020_ts) <= sliding_window_end)
+
+  # Test Data
+  ce_test <- window(df_pre_2020, start=test_start, end=test_end)
+  xreg_test <- subset(xreg_pre_2020_ts, time(xreg_pre_2020_ts) >= test_start & time(xreg_pre_2020_ts) <= test_end)
+
+  if (i==1 | i==80) {
+  cat(c("*** CV", i,":","len(Expanding Window):",length(train_1), "len(Sliding Window):",length(train_2),     "len(Test):",length(test),'\n'  ))
+  cat(c("*** TRAIN -  Expanding WIndow:",tsp(train_1)[1],'-',tsp(train_1)[2],'\n'))
+  cat(c("*** TRAIN - Sliding WIndow:",tsp(train_2)[1],'-',tsp(train_2)[2],'\n'))
+  cat(c("*** TEST:",tsp(test)[1],'-',tsp(test)[2],'\n'))
+  cat("*************************** \n \n")
+  }
+  
+  
+  sarima_fit_1 <- Arima(ce_train_1, xreg=xreg_train_1, order=order, seasonal=list(order=seasonal_order, period=p),
+                 include.drift=TRUE, lambda="auto", method="ML")
+  aicc_1 <- append(aicc_1, sarima_fit_1$aicc)
+  fcast_1 <- forecast(sarima_fit_1, h=H)
+  
+  
+  sarima_fit_2 <- Arima(ce_train_2, xreg=xreg_train_2, order=order, seasonal=list(order=seasonal_order, period=p),
+                 include.drift=TRUE, lambda="auto", method="ML")
+  aicc_2 <- append(aicc_2, sarima_fit_2$aicc)
+  fcast_2 <- forecast(sarima_fit_2, h=H)
+  
+  err_1[i,1:length(test)] <- fcast_1[['mean']]-test
+  err_2[i,1:length(test)] <- fcast_2[['mean']]-test
+}
+```
+
+xreg pre 2017
+```{r}
+# filtering columns
+pre_2017_df_filtered <- df_pre_2017 %>% 
+  select('gdp', 'total_renewable_energy_consumption', 'total_renewable_energy_production', 'total_fossil_fuels_production', 'total_fossil_fuels_consumption' , 'Intervention_sig')
+
+# make numeric, deal with nulls
+xreg_pre <- pre_2017_df_filtered
+if (!is.matrix(xreg_pre)) {
+  xreg_pre <- as.matrix(xreg_pre)
+}
+```
+
+xreg post 2017
+```{r}
+# filtering columns
+post_2017_df_filtered <- df_post_2017 %>% 
+  select('gdp', 'total_renewable_energy_consumption', 'total_renewable_energy_production', 'total_fossil_fuels_production', 'total_fossil_fuels_consumption' , 'Intervention_sig')
+
+# make numeric, deal with nulls
+xreg_post <- post_2017_df_filtered
+if (!is.matrix(xreg_post)) {
+  xreg_post <- as.matrix(xreg_post)
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

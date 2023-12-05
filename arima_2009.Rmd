@@ -20,7 +20,7 @@ library(MuMIn)
 ### edited data loading and manipulating
 
 ```{r Loading the dataset}
-data <- read_csv("/Users/pandita/Documents/merged.csv", show_col_types = FALSE)
+data <- read_csv("merged.csv", show_col_types = FALSE)
 data <- data %>%
   mutate(across(where(is.numeric), ~ifelse(. == "Not Available", 0, .)))
 data$Date <- as.Date(data$Date, format = "%Y-%m-%d")  # Adjust format as per your date format
@@ -84,6 +84,68 @@ non_seasonal_orders <- list(c(1, 3), c(3, 0), c(2, 2))
 seasonal_order_range <- list(P = c(1, 2, 3), Q = c(0, 1, 2))
 ```
 
+
+
+```{r}
+fit_arima_models <- function(data, non_seasonal_orders, seasonal_order_range) {
+  results <- list()
+  best_model <- NULL
+  lowest_aicc <- Inf
+  
+  # Fit ARIMA models with specified orders
+  for(order in non_seasonal_orders) {
+    for(P in (seasonal_order_range$P[1]):(seasonal_order_range$P[3])) {
+      for(Q in (seasonal_order_range$Q[1]):(seasonal_order_range$Q[3])) {
+        current_order <- c(order[1], 1, order[2])
+        current_seasonal_order <- c(P, 1, Q)
+        
+        model_attempt <- try(Arima(data, order = current_order, seasonal = current_seasonal_order), silent = FALSE)
+        
+        if (inherits(model_attempt, "try-error")) {
+          print(paste("Error in fitting model:", current_order, current_seasonal_order))
+          print(model_attempt)
+        } else {
+          model <- model_attempt
+          model_name <- paste("ARIMA", paste(current_order, collapse = ","), " x ", paste(current_seasonal_order, collapse = ","), sep = "")
+          aicc_value <- AICc(model)
+          results[[model_name]] <- list(Model = model, AICc = aicc_value)
+          cat(model_name, ": AICc =", aicc_value, "\n")
+          
+          if (aicc_value < lowest_aicc) {
+            best_model <- model
+            lowest_aicc <- aicc_value
+          }
+        }
+      }
+    }
+  }
+
+  # Fit auto.arima model without regression
+  auto_model_attempt <- try(auto.arima(data, seasonal = TRUE), silent = FALSE)
+  
+  if (inherits(auto_model_attempt, "try-error")) {
+    print("Error in fitting auto.arima model")
+    print(auto_model_attempt)
+  } else {
+    auto_model <- auto_model_attempt
+    arima_order <- auto_model$order
+    seasonal_order <- auto_model$seasonal$order
+    frequency <- auto_model$seasonal$period
+    aicc_value <- AICc(auto_model)
+    results[["auto.arima"]] <- list(Model = auto_model, AICc = aicc_value)
+    cat("auto.arima: AICc =", aicc_value)
+    
+    if (aicc_value < lowest_aicc) {
+      best_model <- auto_model
+      lowest_aicc <- aicc_value
+    }
+  }
+  
+  results[["best_model"]] <- best_model
+  return(results)
+}
+```
+
 ### arimax function
 
 ```{r}
@@ -145,7 +207,7 @@ fit_arimax_models <- function(data, xreg, non_seasonal_orders, seasonal_order_ra
 }
 ```
 
-### xreg for pre 2005
+### xreg for pre 2009
 
 ```{r}
 # filtering columns
@@ -164,8 +226,23 @@ if (!is.matrix(xreg)) {
 ```
 
 ```{r}
-auto.arima(pre_2009_train, xreg = xreg, seasonal = TRUE)
+auto.model <- auto.arima(pre_2009_train, seasonal = TRUE)
 ```
+
+```{r}
+fitted_arima_models <- fit_arima_models(pre_2009_train, non_seasonal_orders, seasonal_order_range)
+```
+
+
+```{r}
+best_model_pre2009 <- fitted_arima_models[["best_model"]]
+checkresiduals(best_model_pre2009)
+ljung_box_test <- Box.test(best_model_pre2009$residuals, lag = 20, type = "Ljung-Box")
+print(ljung_box_test)
+```
+
+
+
 
 ### models for pre 2009
 
