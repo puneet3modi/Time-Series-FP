@@ -254,7 +254,7 @@ fitted_models <- fit_arimax_models(pre_2009_train, xreg, non_seasonal_orders, se
 ARIMA1,1,3 x 2,1,2 : AICc = 1588.949 
 
 
-### xreg for post 2005
+### xreg for post 2009
 
 ```{r}
 # filtering columns
@@ -299,7 +299,7 @@ print(ljung_box_test)
 
 ```{r}
 # forecast best model after 2009 Feb policy implementation
-forecast_best_model_2009 <- forecast(best_model_pre2009, xreg = xreg_post)
+forecast_best_model_2009 <- forecast(fitted_models$best_model, xreg = xreg_post)
 ```
 
 ```{r}

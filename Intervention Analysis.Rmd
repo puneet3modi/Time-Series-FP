@@ -367,6 +367,121 @@ accuracy(forecast_best_model_2017)
 accuracy(forecast_best_model_2017_wi)
 ```
 
+```{r}
+accuracy(forecast_best_model_2017_arima)
+```
+
+
+
+Compare with baseline arima 
+
+```{r}
+fit_arima_models <- function(data, non_seasonal_orders, seasonal_order_range) {
+  results <- list()
+  best_model <- NULL
+  lowest_aicc <- Inf
+  
+  # Fit ARIMA models with specified orders
+  for(order in non_seasonal_orders) {
+    for(P in (seasonal_order_range$P[1]):(seasonal_order_range$P[3])) {
+      for(Q in (seasonal_order_range$Q[1]):(seasonal_order_range$Q[3])) {
+        current_order <- c(order[1], 1, order[2])
+        current_seasonal_order <- c(P, 1, Q)
+        
+        model_attempt <- try(Arima(data, order = current_order, seasonal = current_seasonal_order), silent = FALSE)
+        
+        if (inherits(model_attempt, "try-error")) {
+          print(paste("Error in fitting model:", current_order, current_seasonal_order))
+          print(model_attempt)
+        } else {
+          model <- model_attempt
+          model_name <- paste("ARIMA", paste(current_order, collapse = ","), " x ", paste(current_seasonal_order, collapse = ","), sep = "")
+          aicc_value <- AICc(model)
+          results[[model_name]] <- list(Model = model, AICc = aicc_value)
+          cat(model_name, ": AICc =", aicc_value, "\n")
+          
+          if (aicc_value < lowest_aicc) {
+            best_model <- model
+            lowest_aicc <- aicc_value
+          }
+        }
+      }
+    }
+  }
+
+  # Fit auto.arima model without regression
+  auto_model_attempt <- try(auto.arima(data, seasonal = TRUE), silent = FALSE)
+  
+  if (inherits(auto_model_attempt, "try-error")) {
+    print("Error in fitting auto.arima model")
+    print(auto_model_attempt)
+  } else {
+    auto_model <- auto_model_attempt
+    arima_order <- auto_model$order
+    seasonal_order <- auto_model$seasonal$order
+    frequency <- auto_model$seasonal$period
+    aicc_value <- AICc(auto_model)
+    results[["auto.arima"]] <- list(Model = auto_model, AICc = aicc_value)
+    cat("auto.arima: AICc =", aicc_value)
+    
+    if (aicc_value < lowest_aicc) {
+      best_model <- auto_model
+      lowest_aicc <- aicc_value
+    }
+  }
+  
+  results[["best_model"]] <- best_model
+  return(results)
+}
+```
+
+```{r}
+# filtering columns
+#pre_2005_df_filtered <- df_pre_2005 %>% select(-contains("co2_emissions"), -date)
+pre_2017_df_filtered <- df_pre_2017 %>% 
+  select('gdp', 'total_renewable_energy_consumption', 'total_renewable_energy_production', 'total_fossil_fuels_production', 'total_fossil_fuels_consumption')
+
+# make numeric, deal with nulls
+xreg_ar_2017 <- pre_2017_df_filtered
+xreg_ar_2017 <- data.frame(lapply(xreg, function(x) as.numeric(as.character(x))))
+#colSums(is.na(xreg))
+#xreg <- xreg[, colSums(is.na(xreg)) == 0]
+if (!is.matrix(xreg_ar_2017)) {
+  xreg_ar_2017 <- as.matrix(xreg_ar_2017)
+}
+```
+
+```{r}
+auto.model <- auto.arima(pre_2017_train, seasonal = TRUE)
+auto.model
+```
+
+```{r}
+fitted_arima_models <- fit_arima_models(pre_2017_train, non_seasonal_orders, seasonal_order_range)
+```
+
+
+BEST MODEL to 2017 with only ARIMA3,1,3 x 2,1,1 : AICc = 3967.796 
+
+
+
+```{r}
+forecast_best_model_2017_arima <- forecast(fitted_arima_models$best_model)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
