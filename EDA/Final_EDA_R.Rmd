@@ -1,0 +1,81 @@
+---
+title: "Time Series Final: EDA in R"
+Team: "Abhishek Pandit, Ankita Nambiar, Paresh Raut, Puneet Modi"
+
+date: "2023-11-07"
+output: html_document
+---
+### Team: Abhishek Pandit, Ankita Nambiar, Paresh Raut, Puneet Modi
+
+Setup
+
+```{r}
+data <- read.csv("ts_final.csv", header = TRUE)
+head(data)
+names(data)
+```
+
+```{r}
+library(dplyr)
+data <- data %>%
+  mutate(across(everything(), ~ifelse(. == "Not Available", 0, .)))
+data$Date <- as.Date(data$Date)
+```
+
+Plotting Time Series Data:
+```{r}
+library(ggplot2)
+ggplot(data, aes(x = data$Date, y = data$Total.Energy.CO2.Emissions)) + geom_line() + labs(title = "Carbon Emissions Over Time")
+```
+
+Decomposition:
+```{r}
+library(forecast)
+decomposed_data <- stl(ts(data$Total.Energy.CO2.Emissions, frequency = 12), s.window = "periodic")
+plot(decomposed_data)
+```
+
+Correlation Analysis:
+```{r}
+cor(data$Total.Energy.CO2.Emissions, data$Total.Primary.Energy.Consumption)
+```
+
+```{r}
+cor(data$Total.Energy.CO2.Emissions, data$GDP)
+```
+
+```{r}
+cor(data$Total.Energy.CO2.Emissions, data$Industrial.Output)
+```
+
+Lag Plot and Autocorrelation Function (ACF):
+
+```{r}
+lag.plot(ts(data$Total.Energy.CO2.Emissions), lags = 12)
+```
+```{r}
+acf(ts(data$Total.Energy.CO2.Emissions))
+```
+
+```{r}
+pacf(ts(data$Total.Energy.CO2.Emissions))
+```
+
+Stationarity Check:
+
+```{r}
+library(tseries)
+adf.test(ts(data$Total.Energy.CO2.Emissions), alternative = "stationary")
+```
+
+non stationary, try differencing
+
+```{r}
+df_diff <- diff(data$Total.Energy.CO2.Emissions)
+adf.test(df_diff, alternative = "stationary")
+```
+
+
+
+
+
